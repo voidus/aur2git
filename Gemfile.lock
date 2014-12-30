@@ -1,0 +1,20 @@
+PATH
+  remote: .
+  specs:
+    aur2git (0.0.1)
+      methadone (~> 1.8.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    methadone (1.8.0)
+      bundler
+    rake (10.4.2)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  aur2git!
+  bundler (~> 1.7)
+  rake

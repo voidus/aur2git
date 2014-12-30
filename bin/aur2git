@@ -1,0 +1,72 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'methadone'
+require 'open-uri'
+require 'cgi'
+require 'tmpdir'
+require 'fileutils'
+require 'aur2git'
+
+class App
+  include Methadone::Main
+  include Methadone::CLILogging
+  include Methadone::SH
+  include Methadone::ExitNow
+
+  main do |user|
+    ssh_host = options['ssh-host'] || 'aur-dev.archlinux.org'
+    if sh("ssh -T '#{ssh_host}' 2>/dev/null", expected: (1..254).to_a) == 255
+      exit_now! 1, "Could not establish ssh connection. Check your key and config and --ssh-host parameter."
+    end
+    tmpdir = Dir.mktmpdir
+    info("Working in #{tmpdir}")
+    page = URI.parse("https://aur.archlinux.org/packages/?SeB=m&K=#{CGI.escape user}").read
+    page.scan(%r[<a href="/packages/([^?=]*)/">\1</a>]).each do |package|
+      package = package[0]
+      filename = "#{package}.tar.gz"
+      tarfile = File.join(tmpdir, filename)
+      gitdir = File.join(tmpdir, package)
+      debug(" #{package}")
+      begin
+        catch :skip do
+          sh! "wget -qO '#{tarfile}' http://aur.archlinux.org/packages/#{package[0..1]}/#{package}/#{filename}"
+          sh "ssh '#{ssh_host}' setup-repo '#{package}' 2>/dev/null", expected: 1
+          sh! "git clone 'ssh+git://#{ssh_host}/#{package}.git/' '#{gitdir}' --quiet 2>&1"
+          sh! "tar -xf '#{tarfile}' -C '#{gitdir}' --strip-components=1"
+          ['PKGBUILD', '.SRCINFO'].each do |f|
+            raise StandardError.new("#{f} missing from #{package}") unless File.exists?(File.join(gitdir, f))
+          end
+          sh! "git -C '#{gitdir}' add .SRCINFO PKGBUILD"
+          sh "git -C '#{gitdir}' diff --staged --quiet", expected: 1 do |out, err, code|
+            if code == 0
+              debug("No differences found for #{package}, skipping")
+              throw :skip
+            end
+          end
+          sh! "git -C '#{gitdir}' commit -m'Initial commit using aur2git'"
+          sh! "git -C '#{gitdir}' push origin master"
+        end
+      rescue StandardError => e
+        error "Error [#{package}]: #{e}"
+      end
+    end
+    unless options['keep-work']
+      FileUtils.rm_rf(tmpdir)
+    end
+  end
+
+  description "Gets your aur packages and uploads them to aur-dev via git"
+
+  on('--ssh-host HOST',
+     'The ssh hostname to connect to. Defaults to aur-dev.archlinux.org.',
+     :REQUIRED)
+  on('-k', '--keep-work', 'Keep the working data')
+  arg :user
+
+  version Aur2git::VERSION
+
+  use_log_level_option :toggle_debug_on_signal => 'USR1'
+
+  go!
+end
